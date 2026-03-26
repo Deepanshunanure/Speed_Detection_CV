@@ -1,5 +1,7 @@
 """Speed estimation component for tracked objects"""
 import logging
+import json
+import time
 from typing import List, Optional, Tuple
 import numpy as np
 
@@ -22,10 +24,15 @@ class SpeedEstimator:
         """
         self.config = config
         self._validate_config()
-        logger.info(
-            f"SpeedEstimator initialized: window={config.averaging_window_frames}, "
-            f"min_trajectory={config.min_trajectory_length}, unit={config.output_unit}"
-        )
+        logger.info(json.dumps({
+            "component_name": "SpeedEstimator",
+            "event": "initialized",
+            "config": {
+                "averaging_window_frames": config.averaging_window_frames,
+                "min_trajectory_length": config.min_trajectory_length,
+                "output_unit": config.output_unit
+            }
+        }))
     
     def _validate_config(self):
         """Validate configuration parameters"""
@@ -56,67 +63,117 @@ class SpeedEstimator:
         Returns:
             List of speed estimates for each tracked object
         """
-        if fps <= 0:
-            raise ValueError("fps must be positive")
+        start_time = time.time()
         
-        results = []
-        
-        for tracked_obj in tracking.tracked_objects:
-            # Check if trajectory has enough points
-            if len(tracked_obj.trajectory) < self.config.min_trajectory_length:
-                logger.debug(
-                    f"Object {tracked_obj.object_id}: insufficient trajectory points "
-                    f"({len(tracked_obj.trajectory)} < {self.config.min_trajectory_length})"
-                )
-                continue
+        try:
+            if fps <= 0:
+                logger.error(json.dumps({
+                    "component_name": "SpeedEstimator",
+                    "event": "invalid_fps",
+                    "fps": fps
+                }))
+                raise ValueError("fps must be positive")
             
-            # Calculate instantaneous speed from last two points
-            instantaneous_speed = self._calculate_instantaneous_speed(
-                tracked_obj.trajectory, fps, calibration
-            )
+            results = []
             
-            # Calculate average speed over window
-            average_speed = self._calculate_average_speed(
-                tracked_obj.trajectory, fps, calibration
-            )
-            
-            # Calculate displacement vector
-            displacement_vector = self._calculate_displacement_vector(
-                tracked_obj.trajectory
-            )
-            
-            # Determine unit and calibration status
-            if calibration is not None and calibration.pixels_per_meter is not None:
-                unit = self.config.output_unit
-                calibrated = True
-            else:
-                unit = "px/s"
-                calibrated = False
-                if calibration is None:
-                    logger.debug(
-                        f"Object {tracked_obj.object_id}: no calibration available, "
-                        f"using pixel-based speed"
+            for tracked_obj in tracking.tracked_objects:
+                try:
+                    # Check if trajectory has enough points
+                    if len(tracked_obj.trajectory) < self.config.min_trajectory_length:
+                        logger.debug(json.dumps({
+                            "component_name": "SpeedEstimator",
+                            "event": "insufficient_trajectory",
+                            "object_id": tracked_obj.object_id,
+                            "frame_number": tracking.frame_number,
+                            "trajectory_length": len(tracked_obj.trajectory),
+                            "min_required": self.config.min_trajectory_length
+                        }))
+                        continue
+                    
+                    # Calculate instantaneous speed from last two points
+                    instantaneous_speed = self._calculate_instantaneous_speed(
+                        tracked_obj.trajectory, fps, calibration
                     )
+                    
+                    # Calculate average speed over window
+                    average_speed = self._calculate_average_speed(
+                        tracked_obj.trajectory, fps, calibration
+                    )
+                    
+                    # Calculate displacement vector
+                    displacement_vector = self._calculate_displacement_vector(
+                        tracked_obj.trajectory
+                    )
+                    
+                    # Determine unit and calibration status
+                    if calibration is not None and calibration.pixels_per_meter is not None:
+                        unit = self.config.output_unit
+                        calibrated = True
+                    else:
+                        unit = "px/s"
+                        calibrated = False
+                        if calibration is None:
+                            logger.debug(json.dumps({
+                                "component_name": "SpeedEstimator",
+                                "event": "no_calibration",
+                                "object_id": tracked_obj.object_id,
+                                "frame_number": tracking.frame_number
+                            }))
+                    
+                    # Create speed result
+                    result = SpeedResult(
+                        object_id=tracked_obj.object_id,
+                        instantaneous_speed=instantaneous_speed,
+                        average_speed=average_speed,
+                        displacement_vector=displacement_vector,
+                        unit=unit,
+                        calibrated=calibrated,
+                        confidence=1.0
+                    )
+                    
+                    results.append(result)
+                    
+                    logger.debug(json.dumps({
+                        "component_name": "SpeedEstimator",
+                        "event": "speed_calculated",
+                        "object_id": tracked_obj.object_id,
+                        "frame_number": tracking.frame_number,
+                        "instantaneous_speed": round(instantaneous_speed, 2),
+                        "average_speed": round(average_speed, 2),
+                        "unit": unit
+                    }))
+                    
+                except Exception as e:
+                    logger.warning(json.dumps({
+                        "component_name": "SpeedEstimator",
+                        "event": "speed_calculation_failed",
+                        "object_id": tracked_obj.object_id,
+                        "frame_number": tracking.frame_number,
+                        "error": str(e)
+                    }))
+                    continue
             
-            # Create speed result
-            result = SpeedResult(
-                object_id=tracked_obj.object_id,
-                instantaneous_speed=instantaneous_speed,
-                average_speed=average_speed,
-                displacement_vector=displacement_vector,
-                unit=unit,
-                calibrated=calibrated,
-                confidence=1.0
-            )
+            processing_time_ms = (time.time() - start_time) * 1000
+            logger.debug(json.dumps({
+                "component_name": "SpeedEstimator",
+                "event": "estimation_complete",
+                "frame_number": tracking.frame_number,
+                "num_speeds_calculated": len(results),
+                "processing_time_ms": round(processing_time_ms, 2)
+            }))
             
-            results.append(result)
+            return results
             
-            logger.debug(
-                f"Object {tracked_obj.object_id}: instant={instantaneous_speed:.2f} {unit}, "
-                f"avg={average_speed:.2f} {unit}"
-            )
-        
-        return results
+        except Exception as e:
+            processing_time_ms = (time.time() - start_time) * 1000
+            logger.error(json.dumps({
+                "component_name": "SpeedEstimator",
+                "event": "estimation_failed",
+                "frame_number": tracking.frame_number,
+                "error": str(e),
+                "processing_time_ms": round(processing_time_ms, 2)
+            }))
+            raise
     
     def _calculate_instantaneous_speed(
         self,

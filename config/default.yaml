@@ -1,44 +1,40 @@
-# Default configuration for OpenCV Video Processing Pipeline
-
-pipeline:
-  enabled_components:
-    - preprocessor
-    - detector
-    - tracker
-    - speed_estimator
-
-preprocessor:
-  target_resolution: [1280, 720]
-  noise_reduction_method: "gaussian"
-  noise_reduction_kernel_size: 5
-  normalize_intensity: true
-
+calibrator:
+  calibration_file_path: calibration.json
+  chessboard_size:
+  - 9
+  - 6
+  perspective_transform_enabled: false
+  square_size_mm: 25.0
 detector:
-  background_subtraction_method: "MOG2"
   background_learning_rate: 0.01
-  edge_detection_enabled: false
+  background_subtraction_method: MOG2
   canny_threshold1: 50
   canny_threshold2: 150
-  min_contour_area: 500.0
+  edge_detection_enabled: false
   max_contour_area: 50000.0
-
-tracker:
-  max_tracking_distance: 50.0
-  max_disappeared_frames: 30
-  trajectory_history_length: 100
-
-calibrator:
-  calibration_file_path: "calibration.json"
-  chessboard_size: [9, 6]
-  square_size_mm: 25.0
-  perspective_transform_enabled: false
-
+  min_contour_area: 500.0
+logging:
+  file_path: null
+  level: INFO
+  log_to_file: false
+pipeline:
+  enabled_components:
+  - preprocessor
+  - detector
+  - tracker
+  - speed_estimator
+preprocessor:
+  noise_reduction_kernel_size: 5
+  noise_reduction_method: gaussian
+  normalize_intensity: true
+  target_resolution:
+  - 1280
+  - 720
 speed_estimator:
   averaging_window_frames: 10
   min_trajectory_length: 2
-  output_unit: "m/s"
-
-logging:
-  level: "INFO"
-  file_path: null
-  log_to_file: false
+  output_unit: m/s
+tracker:
+  max_disappeared_frames: 30
+  max_tracking_distance: 50.0
+  trajectory_history_length: 100

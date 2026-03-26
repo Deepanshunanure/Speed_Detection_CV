@@ -1,6 +1,7 @@
 """Configuration management for the video processing pipeline"""
 import json
 import yaml
+import logging
 from pathlib import Path
 from typing import Optional, List
 from src.config.models import (
@@ -12,6 +13,9 @@ from src.config.models import (
     SpeedEstimatorConfig,
     LoggingConfig
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigurationManager:
@@ -26,12 +30,33 @@ class ConfigurationManager:
         """
         self.config_path = Path(config_path)
         self._config_data = {}
-        self._load_configuration()
+        
+        try:
+            self._load_configuration()
+            logger.info(json.dumps({
+                "component_name": "ConfigurationManager",
+                "event": "initialized",
+                "config_path": str(self.config_path)
+            }))
+        except Exception as e:
+            logger.error(json.dumps({
+                "component_name": "ConfigurationManager",
+                "event": "initialization_failed",
+                "config_path": str(self.config_path),
+                "error": str(e)
+            }))
+            raise
     
     def _load_configuration(self) -> None:
         """Load configuration from file or use defaults if file doesn't exist"""
         if not self.config_path.exists():
             # Use default configuration when file is missing
+            logger.warning(json.dumps({
+                "component_name": "ConfigurationManager",
+                "event": "config_file_not_found",
+                "config_path": str(self.config_path),
+                "action": "using_defaults"
+            }))
             self._config_data = self._get_default_config()
             return
         
@@ -43,8 +68,27 @@ class ConfigurationManager:
                 elif self.config_path.suffix == '.json':
                     self._config_data = json.load(f)
                 else:
-                    raise ValueError(f"Unsupported configuration file format: {self.config_path.suffix}")
+                    error_msg = f"Unsupported configuration file format: {self.config_path.suffix}"
+                    logger.error(json.dumps({
+                        "component_name": "ConfigurationManager",
+                        "event": "unsupported_format",
+                        "config_path": str(self.config_path),
+                        "suffix": self.config_path.suffix
+                    }))
+                    raise ValueError(error_msg)
+            
+            logger.info(json.dumps({
+                "component_name": "ConfigurationManager",
+                "event": "config_loaded",
+                "config_path": str(self.config_path)
+            }))
         except Exception as e:
+            logger.error(json.dumps({
+                "component_name": "ConfigurationManager",
+                "event": "config_load_failed",
+                "config_path": str(self.config_path),
+                "error": str(e)
+            }))
             raise RuntimeError(f"Failed to load configuration from {self.config_path}: {e}")
     
     def _get_default_config(self) -> dict:

@@ -1,8 +1,14 @@
 """Object tracking module using centroid tracking algorithm"""
 import numpy as np
+import logging
+import json
+import time
 from typing import Dict, List, Tuple
 from src.config.models import TrackerConfig
 from src.models import DetectionResult, TrackingResult, TrackedObject, BoundingBox
+
+
+logger = logging.getLogger(__name__)
 
 
 class Tracker:
@@ -25,6 +31,16 @@ class Tracker:
         self._trajectories: Dict[int, List[Tuple[float, float]]] = {}  # id -> position history
         self._ages: Dict[int, int] = {}  # id -> frames since first detection
         self._bounding_boxes: Dict[int, BoundingBox] = {}  # id -> current bounding box
+        
+        logger.info(json.dumps({
+            "component_name": "Tracker",
+            "event": "initialized",
+            "config": {
+                "max_tracking_distance": self.config.max_tracking_distance,
+                "max_disappeared_frames": self.config.max_disappeared_frames,
+                "trajectory_history_length": self.config.trajectory_history_length
+            }
+        }))
     
     def _validate_config(self):
         """Validate configuration parameters"""
@@ -56,97 +72,176 @@ class Tracker:
         Returns:
             Tracking results with IDs and trajectories
         """
-        # Extract centroids from detections
-        input_centroids = [bbox.centroid for bbox in detections.bounding_boxes]
+        start_time = time.time()
         
-        # If no current objects being tracked
-        if len(self._objects) == 0:
-            # Register all detections as new objects
-            for i, centroid in enumerate(input_centroids):
-                self._register(centroid, detections.bounding_boxes[i])
-        else:
-            # Get current tracked object IDs and centroids
-            object_ids = list(self._objects.keys())
-            object_centroids = list(self._objects.values())
+        try:
+            # Extract centroids from detections
+            input_centroids = [bbox.centroid for bbox in detections.bounding_boxes]
             
-            # Match input centroids to existing object centroids
-            if len(input_centroids) > 0:
-                # Compute distance matrix between all pairs
-                distances = self._compute_distances(object_centroids, input_centroids)
-                
-                # Perform matching
-                matched_object_ids, matched_input_indices = self._match_centroids(
-                    distances, object_ids
-                )
-                
-                # Update matched objects
-                for obj_id, input_idx in zip(matched_object_ids, matched_input_indices):
-                    centroid = input_centroids[input_idx]
-                    bbox = detections.bounding_boxes[input_idx]
-                    
-                    # Update object position
-                    self._objects[obj_id] = centroid
-                    self._bounding_boxes[obj_id] = bbox
-                    
-                    # Add to trajectory history
-                    self._trajectories[obj_id].append(centroid)
-                    
-                    # Trim trajectory to max length
-                    if len(self._trajectories[obj_id]) > self.config.trajectory_history_length:
-                        self._trajectories[obj_id] = self._trajectories[obj_id][
-                            -self.config.trajectory_history_length:
-                        ]
-                    
-                    # Reset disappeared counter
-                    self._disappeared[obj_id] = 0
-                    
-                    # Increment age
-                    self._ages[obj_id] += 1
-                
-                # Find unmatched detections and register as new objects
-                unmatched_input_indices = set(range(len(input_centroids))) - set(matched_input_indices)
-                for input_idx in unmatched_input_indices:
-                    self._register(
-                        input_centroids[input_idx],
-                        detections.bounding_boxes[input_idx]
-                    )
-                
-                # Find unmatched existing objects and increment disappeared counter
-                unmatched_object_ids = set(object_ids) - set(matched_object_ids)
-                for obj_id in unmatched_object_ids:
-                    self._disappeared[obj_id] += 1
+            # If no current objects being tracked
+            if len(self._objects) == 0:
+                # Register all detections as new objects
+                for i, centroid in enumerate(input_centroids):
+                    self._register(centroid, detections.bounding_boxes[i])
             else:
-                # No detections, increment disappeared counter for all objects
-                for obj_id in object_ids:
-                    self._disappeared[obj_id] += 1
-        
-        # Remove objects that have disappeared for too long
-        disappeared_ids = [
-            obj_id for obj_id, count in self._disappeared.items()
-            if count > self.config.max_disappeared_frames
-        ]
-        for obj_id in disappeared_ids:
-            self._deregister(obj_id)
-        
-        # Build tracking result
-        tracked_objects = []
-        for obj_id in self._objects.keys():
-            tracked_obj = TrackedObject(
-                object_id=obj_id,
-                position=self._objects[obj_id],
-                bounding_box=self._bounding_boxes[obj_id],
-                trajectory=self._trajectories[obj_id].copy(),
-                age=self._ages[obj_id],
-                disappeared_count=self._disappeared[obj_id]
+                # Get current tracked object IDs and centroids
+                object_ids = list(self._objects.keys())
+                object_centroids = list(self._objects.values())
+                
+                # Match input centroids to existing object centroids
+                if len(input_centroids) > 0:
+                    try:
+                        # Compute distance matrix between all pairs
+                        distances = self._compute_distances(object_centroids, input_centroids)
+                        
+                        # Perform matching
+                        matched_object_ids, matched_input_indices = self._match_centroids(
+                            distances, object_ids
+                        )
+                    except Exception as e:
+                        logger.error(json.dumps({
+                            "component_name": "Tracker",
+                            "event": "matching_failed",
+                            "frame_number": detections.frame_number,
+                            "error": str(e)
+                        }))
+                        # Fallback: treat all as new objects
+                        matched_object_ids = []
+                        matched_input_indices = []
+                    
+                    # Update matched objects
+                    for obj_id, input_idx in zip(matched_object_ids, matched_input_indices):
+                        try:
+                            centroid = input_centroids[input_idx]
+                            bbox = detections.bounding_boxes[input_idx]
+                            
+                            # Update object position
+                            self._objects[obj_id] = centroid
+                            self._bounding_boxes[obj_id] = bbox
+                            
+                            # Add to trajectory history
+                            self._trajectories[obj_id].append(centroid)
+                            
+                            # Trim trajectory to max length
+                            if len(self._trajectories[obj_id]) > self.config.trajectory_history_length:
+                                self._trajectories[obj_id] = self._trajectories[obj_id][
+                                    -self.config.trajectory_history_length:
+                                ]
+                            
+                            # Reset disappeared counter
+                            self._disappeared[obj_id] = 0
+                            
+                            # Increment age
+                            self._ages[obj_id] += 1
+                        except Exception as e:
+                            logger.warning(json.dumps({
+                                "component_name": "Tracker",
+                                "event": "object_update_failed",
+                                "frame_number": detections.frame_number,
+                                "object_id": obj_id,
+                                "error": str(e)
+                            }))
+                            continue
+                    
+                    # Find unmatched detections and register as new objects
+                    unmatched_input_indices = set(range(len(input_centroids))) - set(matched_input_indices)
+                    for input_idx in unmatched_input_indices:
+                        try:
+                            self._register(
+                                input_centroids[input_idx],
+                                detections.bounding_boxes[input_idx]
+                            )
+                        except Exception as e:
+                            logger.warning(json.dumps({
+                                "component_name": "Tracker",
+                                "event": "object_registration_failed",
+                                "frame_number": detections.frame_number,
+                                "error": str(e)
+                            }))
+                            continue
+                    
+                    # Find unmatched existing objects and increment disappeared counter
+                    unmatched_object_ids = set(object_ids) - set(matched_object_ids)
+                    for obj_id in unmatched_object_ids:
+                        self._disappeared[obj_id] += 1
+                else:
+                    # No detections, increment disappeared counter for all objects
+                    for obj_id in object_ids:
+                        self._disappeared[obj_id] += 1
+            
+            # Remove objects that have disappeared for too long
+            disappeared_ids = [
+                obj_id for obj_id, count in self._disappeared.items()
+                if count > self.config.max_disappeared_frames
+            ]
+            for obj_id in disappeared_ids:
+                try:
+                    self._deregister(obj_id)
+                    logger.debug(json.dumps({
+                        "component_name": "Tracker",
+                        "event": "object_deregistered",
+                        "frame_number": detections.frame_number,
+                        "object_id": obj_id,
+                        "reason": "max_disappeared_frames_exceeded"
+                    }))
+                except Exception as e:
+                    logger.warning(json.dumps({
+                        "component_name": "Tracker",
+                        "event": "object_deregistration_failed",
+                        "frame_number": detections.frame_number,
+                        "object_id": obj_id,
+                        "error": str(e)
+                    }))
+            
+            # Build tracking result
+            tracked_objects = []
+            for obj_id in self._objects.keys():
+                try:
+                    tracked_obj = TrackedObject(
+                        object_id=obj_id,
+                        position=self._objects[obj_id],
+                        bounding_box=self._bounding_boxes[obj_id],
+                        trajectory=self._trajectories[obj_id].copy(),
+                        age=self._ages[obj_id],
+                        disappeared_count=self._disappeared[obj_id]
+                    )
+                    tracked_objects.append(tracked_obj)
+                except Exception as e:
+                    logger.warning(json.dumps({
+                        "component_name": "Tracker",
+                        "event": "tracked_object_creation_failed",
+                        "frame_number": detections.frame_number,
+                        "object_id": obj_id,
+                        "error": str(e)
+                    }))
+                    continue
+            
+            result = TrackingResult(
+                frame_number=detections.frame_number,
+                tracked_objects=tracked_objects
             )
-            tracked_objects.append(tracked_obj)
-        
-        result = TrackingResult(
-            frame_number=detections.frame_number,
-            tracked_objects=tracked_objects
-        )
-        
-        return result
+            
+            processing_time_ms = (time.time() - start_time) * 1000
+            logger.debug(json.dumps({
+                "component_name": "Tracker",
+                "event": "tracking_complete",
+                "frame_number": detections.frame_number,
+                "num_tracked_objects": len(tracked_objects),
+                "processing_time_ms": round(processing_time_ms, 2)
+            }))
+            
+            return result
+            
+        except Exception as e:
+            processing_time_ms = (time.time() - start_time) * 1000
+            logger.error(json.dumps({
+                "component_name": "Tracker",
+                "event": "tracking_failed",
+                "frame_number": detections.frame_number,
+                "error": str(e),
+                "processing_time_ms": round(processing_time_ms, 2)
+            }))
+            raise
     
     def _register(self, centroid: Tuple[float, float], bbox: BoundingBox):
         """
